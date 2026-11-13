@@ -1,0 +1,41 @@
+# Reference material kept on this computer only: other projects and a copy of
+# Microsoft's MXC source. Never part of this repository.
+/reference_apps_only/
+
+# Python caches and build output
+__pycache__/
+*.py[cod]
+*.egg-info/
+/build/
+/dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Secrets and local settings
+.env
+.env.*
+*.pem
+*.key
+
+# Folders the examples create when run
+/examples/one_line_app_data/
+
+# Editors and operating system
+.vscode/
+.idea/
+*.swp
+Thumbs.db
+desktop.ini
+.DS_Store
+
+# Logs and scratch files
+*.log
+*.tmp
