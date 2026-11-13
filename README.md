@@ -544,6 +544,7 @@ On Windows 11 25H2 build 26200.9974 with Python 3.12, 3.13 and 3.14:
 - `python pymxc.py --selftest`: the encoder produces the reference bytes, and Windows enforces the policy (writes and reads outside denied, deny path wins, network blocked, temp folder works).
 - `python -m unittest discover -s tests -v`: 76 tests. They cover file access (read-write, read-only, deny, a deny path that appears later, a single granted file), network off, the host allow-list, loopback, exit codes and arguments, standard input, timeouts stopping the whole process tree, `Popen` streaming and `kill`, `enable()` for a script and for `python -m`, `enable()` keeping the program's own folder read-only, `NO_WINDOWS`, `CLIPBOARD = "none"`, the name-listing switch, temp folder cleanup, every `ON_UNAVAILABLE` mode, and the status codes.
 - `enable()` in a real console window, with redirected output, and with captured output.
+- `python pymxc.py --selftest` also passed on a second computer running a different Windows build (26300.9974, policy version 1.1). Only the selftest was run there, not the full test suite.
 - `NETWORK = "hosts"` against real servers: with only `generativelanguage.googleapis.com` listed, the Google Gemini endpoint answered, `example.com` was refused, and a direct socket was blocked. pip downloaded a package with only `pypi.org` and `files.pythonhosted.org` listed.
 
 Not tested, so treat with care:
