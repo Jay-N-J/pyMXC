@@ -1,0 +1,5 @@
+# Extra files for the source package. The installed package is pymxc.py alone.
+include SECURITY.md
+include THIRD_PARTY_NOTICES.md
+recursive-include examples *.py
+recursive-include tests *.py

@@ -579,6 +579,8 @@ python pymxc.py --selftest
 | `tests\test_pymxc.py` | The test suite |
 | `pymxc_report.html` | A sample of that report, from the computer pymxc was developed on |
 | `LICENSE`, `THIRD_PARTY_NOTICES.md` | MIT license; notice for Microsoft's MXC schema |
+| `SECURITY.md` | How to report a vulnerability privately |
+| `pyproject.toml`, `MANIFEST.in` | Packaging for PyPI. Not needed when you copy `pymxc.py`. |
 
 ## Notices
 

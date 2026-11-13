@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pymxc"
+dynamic = ["version"]
+description = "Unofficial: run Python programs and commands inside a Windows MXC sandbox (Microsoft Execution Containers) from one standard-library file."
+readme = "README.md"
+requires-python = ">=3.12"
+license = "MIT"
+license-files = ["LICENSE", "THIRD_PARTY_NOTICES.md"]
+authors = [{ name = "Jay-N-J" }]
+keywords = ["sandbox", "windows", "mxc", "security", "appcontainer", "subprocess", "isolation"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Operating System :: Microsoft :: Windows :: Windows 11",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Security",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/Jay-N-J/pyMXC"
+Repository = "https://github.com/Jay-N-J/pyMXC"
+Issues = "https://github.com/Jay-N-J/pyMXC/issues"
+
+[tool.setuptools]
+py-modules = ["pymxc"]
+
+[tool.setuptools.dynamic]
+version = { attr = "pymxc.__version__" }
