@@ -40,9 +40,10 @@ read_only=[r"C:\\data"])``.
 REQUIREMENTS
 ------------
 Windows 11 24H2 build 26100.9278 or 25H2 build 26200.9278, or later. On
-anything else (older Windows, Linux, macOS) this file still imports and, by
-default, runs your program WITHOUT the sandbox after one warning. See
-``ON_UNAVAILABLE`` to change that.
+anything else (older Windows, Linux, macOS) this file still imports. By
+default ``enable()`` then lets your own program carry on WITHOUT the sandbox
+after one warning, while ``run()`` and ``Popen()`` refuse to start a command
+unsandboxed. See ``ON_UNAVAILABLE`` to change either.
 
 STATUS CODES (``pymxc.Status``; also the exit code of ``python pymxc.py``)
 --------------------------------------------------------------------------
@@ -123,7 +124,10 @@ __all__ = [
 # line below it. To switch, comment one line and uncomment another.
 
 # ---- When the sandbox is not available on this computer ---------------------
-ON_UNAVAILABLE = "warn"        # print one warning, then run WITHOUT the sandbox
+ON_UNAVAILABLE = None          # None = "warn" for enable() (your own program carries on),
+#                              #        "error" for run() and Popen() (a command you do
+#                              #        not trust is never started without the sandbox)
+# ON_UNAVAILABLE = "warn"      # print one warning, then run WITHOUT the sandbox
 # ON_UNAVAILABLE = "silent"    # run without the sandbox and say nothing
 # ON_UNAVAILABLE = "error"     # do not run: enable() exits with the status code,
 #                              # run() returns a Result that did not run,
@@ -196,6 +200,8 @@ NETWORK = "off"                # no network at all
 # "Private" means the address ranges reserved for it: 10.x, 172.16-31.x, 192.168.x,
 # 169.254.x, 100.64-127.x, and fc00::/7 and fe80::/10 for IPv6. pymxc tells Windows
 # these ranges itself, so "internet" and "intranet" mean the same on every network.
+# Multicast and broadcast addresses (224.x-239.x, 255.255.255.255, ff00::/8) count as
+# private too: they are how programs find and talk to devices on the local network.
 # An organisation that uses public address ranges internally is not covered by
 # them: list its ranges with NETWORK = "custom", or its servers with "hosts".
 # With "intranet" and "all" the program may also accept connections from the
@@ -249,12 +255,19 @@ ALLOW_LOOPBACK = False         # the program may talk to other programs on this
 # ALLOW_LOOPBACK = True        # computer over 127.0.0.1 (same conditions)
 
 # ---- Windows, clipboard and input -------------------------------------------
-# Apart from reading the clipboard in run() and Popen(), the defaults restrict
-# nothing here. Microsoft's MXC defaults are the opposite (everything in this
-# group locked down); the strict choice is marked "MXC".
+# The defaults restrict little here: a command started with run() or Popen()
+# cannot read the clipboard or reach other programs' windows, and that is all.
+# Microsoft's MXC defaults are the opposite (everything in this group locked
+# down); the strict choice is marked "MXC".
+#
+# A program that may open windows can also READ THE SCREEN (take screenshots).
+# Only NO_WINDOWS = True stops that.
 NO_WINDOWS = False             # the program may open windows
-# NO_WINDOWS = True            # MXC: no windows or graphics at all (tkinter, Qt and
-#                              # message boxes fail). Best for command-line tools.
+# NO_WINDOWS = True            # MXC: no windows or graphics at all. tkinter, Qt and
+#                              # message boxes fail, and so does much else that loads
+#                              # the window system: Python's ssl and ctypes modules
+#                              # (so no HTTPS from Python, and no pip install), git,
+#                              # PowerShell. Plain Python and cmd.exe built-ins still run.
 
 CLIPBOARD = None               # None = "all" for enable() (your own program may paste),
 #                              #        "write" for run() and Popen() (a command you do
@@ -264,8 +277,15 @@ CLIPBOARD = None               # None = "all" for enable() (your own program may
 # CLIPBOARD = "write"          # may copy to the clipboard, may not paste from it
 # CLIPBOARD = "none"           # MXC: no clipboard
 
-UI_ISOLATION = "desktop"       # the program may see other programs' windows
-# UI_ISOLATION = "handles"     # cannot see or message windows of other programs
+UI_ISOLATION = None            # None = "desktop" for enable(), "handles" for run() and Popen()
+#                              #        (a command you do not trust cannot read the titles
+#                              #        of your other windows). A command you allow to paste
+#                              #        (CLIPBOARD "all" or "read") gets "desktop": Windows
+#                              #        gives clipboard contents only to a program that can
+#                              #        reach other programs' windows.
+# UI_ISOLATION = "desktop"     # the program may see other programs' windows and their titles
+# UI_ISOLATION = "handles"     # cannot see or message windows of other programs, and
+#                              # cannot paste what they copied
 # UI_ISOLATION = "atoms"       # gets a private atom table (window class / DDE names)
 # UI_ISOLATION = "container"   # MXC: both of the above
 
@@ -293,7 +313,10 @@ ENCODING = "utf-8"             # run(): how output is decoded. Python children a
 # ENCODING = "oem"             # the console code page (cmd.exe built-ins such as dir)
 
 HIDE_SECRET_ENV = False        # the program gets all of your environment variables
-# HIDE_SECRET_ENV = True       # drop variables that look like keys, tokens or passwords
+# HIDE_SECRET_ENV = True       # drop variables that look like keys, tokens or passwords.
+#                              # It goes by name (and by a password inside a URL), so it
+#                              # can miss one. Variables saved for your user account
+#                              # (setx, System Properties) stay readable in the registry.
 
 EXTRA_ENV = {}                 # environment variables to add or replace
 # EXTRA_ENV = {"MY_APP_MODE": "sandboxed"}
@@ -337,9 +360,12 @@ _OPTION_NAMES = (
 # enable() runs your own program from the folder its code is in; run() and
 # Popen() run a command you may not trust in a folder it is meant to work in.
 _CALLER_DEFAULTS = {
+    "on_unavailable": ("warn", "error"),
     "workspace_access": ("ro", "rw"),
     "clipboard": ("all", "write"),
 }
+_CLIPBOARD_READERS = ("all", "read")
+_WINDOW_ISOLATION = ("handles", "container")
 
 
 def _options(overrides: dict, own_program: bool = False) -> SimpleNamespace:
@@ -353,6 +379,11 @@ def _options(overrides: dict, own_program: bool = False) -> SimpleNamespace:
     for name, (for_enable, for_commands) in _CALLER_DEFAULTS.items():
         if getattr(opts, name) is None:
             setattr(opts, name, for_enable if own_program else for_commands)
+    if opts.ui_isolation is None:
+        # Windows hands clipboard contents only to a program that can reach other
+        # programs' windows, so a command that was allowed to paste keeps that reach.
+        reach = own_program or opts.clipboard in _CLIPBOARD_READERS
+        opts.ui_isolation = "desktop" if reach else "handles"
     return opts
 
 
@@ -656,7 +687,8 @@ _API_SET = b"api-win-appmodel-processmodel~securityenvironment"
 _EXPORTS = ("CreateProcessSecurityEnvironment", "QueryProcessSecurityEnvironmentSupport",
             "IsProcessSecurityEnvironmentVersionSupported", "CloseProcessSecurityEnvironment")
 _SUPPORT_FLAGS = {0x1: "FileSystemDeny", 0x4: "FileSystemEnumerate", 0x8: "NetworkIngress"}
-_MIN_BUILDS = "Windows 11 24H2 build 26100.9278 or 25H2 build 26200.9278"
+_MIN_BUILDS = ("Windows 11 24H2 build 26100.9278, 25H2 build 26200.9278, 26H1 build 28000.2804 "
+               "or 26H2 build 26300.9550")
 
 _LOAD_LIBRARY_SEARCH_SYSTEM32 = 0x00000800
 _ATTR_HANDLE_LIST = 0x00020002
@@ -690,9 +722,12 @@ UI_IME = 0x0100
 UI_INJECTION = 0x0200
 
 # Address ranges reserved for private use: RFC 1918, link-local, carrier-grade NAT
-# (also used by some VPNs), and IPv6 unique-local and link-local.
+# (also used by some VPNs), and IPv6 unique-local and link-local. Multicast and
+# broadcast belong here too: they never leave the local network, and without them
+# "internet" lets a program discover local devices (SSDP, mDNS) and hear their answers.
 _PRIVATE_RANGES = ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "169.254.0.0/16", "100.64.0.0/10",
-                   "fc00::/7", "fe80::/10")
+                   "224.0.0.0/4", "255.255.255.255/32",
+                   "fc00::/7", "fe80::/10", "ff00::/8")
 
 INTERNET = "internetClient"
 PRIVATE_NETWORK = "privateNetworkClientServer"
@@ -805,6 +840,7 @@ if _k32 is not None:
     _CreateFileW = _sig("CreateFileW", [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, ctypes.c_void_p,
                                         wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE], wintypes.HANDLE)
     _GetConsoleWindow = _sig("GetConsoleWindow", [], wintypes.HWND)
+    _OpenProcess = _sig("OpenProcess", [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD], wintypes.HANDLE)
 
 
 def _check(ok, what):
@@ -1040,6 +1076,9 @@ class SandboxedPopen:
         if hr < 0:
             raise SandboxLaunchError(f"CreateProcessSecurityEnvironment failed: HRESULT 0x{hr & 0xFFFFFFFF:08X}",
                                      hr & 0xFFFFFFFF)
+        if not self._environment:  # success without a sandbox to attach: never start the program
+            raise SandboxLaunchError("CreateProcessSecurityEnvironment failed: it reported success "
+                                     "but returned no sandbox (HRESULT 0x8000FFFF)", 0x8000FFFF)
         child_ends, parent_ends, attrs, out_r, err_r, in_w = [], [], None, None, None, None
         try:
             stdio = None
@@ -1113,7 +1152,8 @@ class SandboxedPopen:
                                                 ctypes.byref(mask), ctypes.sizeof(mask)),
                        "SetInformationJobObject(UIRestrictions)")
             _check(_AssignProcessToJobObject(self._job, self._pi.hProcess), "AssignProcessToJobObject")
-            _ResumeThread(self._pi.hThread)
+            # A program that stays suspended would never exit: treat it as a failed launch.
+            _check(_ResumeThread(self._pi.hThread) != 0xFFFFFFFF, "ResumeThread")
         except BaseException:
             for h in parent_ends:
                 _CloseHandle(h)
@@ -1246,12 +1286,20 @@ class SandboxedPopen:
 # From settings to a policy
 # =============================================================================
 
-_SECRET_WORDS = {"KEY", "APIKEY", "TOKEN", "SECRET", "PASSWORD", "PASSWD", "CREDENTIAL", "CREDENTIALS"}
+_SECRET_WORDS = {"KEY", "APIKEY", "TOKEN", "SECRET", "PASSWORD", "PASSWD", "CREDENTIAL", "CREDENTIALS",
+                 "PAT", "AUTH", "DSN", "PASSPHRASE", "COOKIE", "WEBHOOK"}
+_URL_WITH_PASSWORD = re.compile(r"://[^/@\s:]*:[^/@\s]+@")
 
 
-def _looks_secret(name: str) -> bool:
+def _looks_secret(name: str, value: str = "") -> bool:
+    """True for a variable whose name reads like a key, token or password, or
+    whose value is a URL with a password in it (postgres://user:pass@host)."""
     parts = [p for p in re.split(r"[^A-Za-z0-9]+", name.upper()) if p]
-    return any(p in _SECRET_WORDS or p.endswith(("TOKEN", "SECRET", "PASSWORD", "APIKEY")) for p in parts)
+    if any(p in _SECRET_WORDS or p.endswith(("TOKEN", "SECRET", "PASSWORD", "APIKEY")) for p in parts):
+        return True
+    if "PWD" in parts and len(parts) > 1:  # MYSQL_PWD, but not the shell's own PWD
+        return True
+    return "CONNECTIONSTRING" in "".join(parts) or bool(_URL_WITH_PASSWORD.search(value))
 
 
 def _dedupe(paths, base=None) -> list:
@@ -1512,15 +1560,17 @@ _MAX_NOTES = 50
 _MAX_NOTE_LENGTH = 300
 
 
-def _remember(notes: list, text) -> bool:
-    """Add a note unless it is known or the list is full. True when one was added."""
+def _remember(notes: list, text) -> str:
+    """Add a note unless it is known or the list is full. Returns the note as
+    it was stored, or "" when nothing was added."""
     text = "".join(c if " " <= c <= "~" else "?" for c in str(text))
     if len(text) > _MAX_NOTE_LENGTH:
         text = text[:_MAX_NOTE_LENGTH] + "..."
     if text in notes or len(notes) > _MAX_NOTES:
-        return False
-    notes.append(text if len(notes) < _MAX_NOTES else "(more, not listed)")
-    return True
+        return ""
+    stored = text if len(notes) < _MAX_NOTES else "(more, not listed)"
+    notes.append(stored)
+    return stored
 
 
 class _HostProxy:
@@ -1611,9 +1661,10 @@ class _HostProxy:
             threading.Thread(target=self._serve, args=(client,), daemon=True).start()
 
     def _refuse(self, client, target, reason):
-        if _remember(self.blocked, target) and self._on_block is not None:
+        note = _remember(self.blocked, target)
+        if note and self._on_block is not None:
             try:
-                self._on_block(self.blocked[-1])
+                self._on_block(note)
             except Exception:
                 pass
         body = f"pymxc: {reason}\n".encode("latin-1", "replace")
@@ -1651,8 +1702,12 @@ class _HostProxy:
             try:
                 upstream, early = self._connect(host, port)
             except OSError as exc:
-                if _remember(self.errors, f"{host}:{port}: {exc}") and self.on_error is not None:
-                    self.on_error(self.errors[-1])
+                note = _remember(self.errors, f"{host}:{port}: {exc}")
+                if note and self.on_error is not None:
+                    try:
+                        self.on_error(note)
+                    except Exception:
+                        pass  # the program still gets its 502 answer
                 body = f"pymxc: could not reach {host}:{port}: {exc}\n".encode("latin-1", "replace")
                 client.sendall(b"HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\n"
                                b"Content-Length: %d\r\n\r\n" % len(body) + body)
@@ -1804,6 +1859,10 @@ def _build_policy(opts, workspace, temp_dir=None, extra_read_only=(), host_proxy
         warnings.append("permissiveLearningMode is on: Windows records but does NOT block. "
                         "The program is not contained.")
     ui_limits = _ui_mask(opts)
+    if opts.clipboard in _CLIPBOARD_READERS and opts.ui_isolation in _WINDOW_ISOLATION:
+        warnings.append(f'CLIPBOARD is "{opts.clipboard}" but the program cannot paste: with UI_ISOLATION '
+                        f'"{opts.ui_isolation}" Windows hides what other programs copied. Use '
+                        'UI_ISOLATION "desktop" or "atoms" to allow pasting.')
     try:
         spec = encode_spec(read_write=read_write, read_only=read_only, deny=deny,
                            enumerate_paths=enumerate_paths, capabilities=capabilities, network=network,
@@ -1883,14 +1942,57 @@ def is_sandboxed() -> bool:
     return os.environ.get(SANDBOX_MARKER) == "1" and _in_app_container()
 
 
+_STILL_ACTIVE = 259
+_PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+_ERROR_INVALID_PARAMETER = 87
+
+
+def _process_is_gone(pid: int) -> bool:
+    """True only when Windows says no process has this id. Any doubt means False."""
+    if _k32 is None:
+        return False
+    handle = _OpenProcess(_PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+    if not handle:
+        return ctypes.get_last_error() == _ERROR_INVALID_PARAMETER
+    try:
+        code = wintypes.DWORD(0)
+        return bool(_GetExitCodeProcess(handle, ctypes.byref(code))) and code.value != _STILL_ACTIVE
+    finally:
+        _CloseHandle(handle)
+
+
+def _sweep_temp_dirs(base: Path) -> None:
+    """Remove temp folders left by programs that ended without cleaning up
+    (killed, crashed), so that what a sandboxed program wrote does not linger."""
+    try:
+        entries = list(base.iterdir())
+    except OSError:
+        return
+    for entry in entries:
+        match = re.fullmatch(r"run-(\d+)-.+", entry.name)
+        if match and int(match.group(1)) != os.getpid() and _process_is_gone(int(match.group(1))):
+            _remove_temp_dir(entry)
+
+
 def _new_temp_dir() -> str:
     # A plain mkdir: tempfile.mkdtemp makes owner-only folders the sandbox cannot use.
+    # The name is not guessable and the folder is always new, so a run never
+    # starts with files an earlier run left behind.
+    base = Path(tempfile.gettempdir()) / "pymxc"
+    base.mkdir(parents=True, exist_ok=True)
     with _temp_lock:
         _temp_counter[0] += 1
         n = _temp_counter[0]
-    path = Path(tempfile.gettempdir()) / "pymxc" / f"run-{os.getpid()}-{n}"
-    path.mkdir(parents=True, exist_ok=True)
-    return str(path)
+        first = n == 1
+    if first:
+        _sweep_temp_dirs(base)
+    while True:
+        path = base / f"run-{os.getpid()}-{n}-{os.urandom(6).hex()}"
+        try:
+            path.mkdir()
+            return str(path)
+        except FileExistsError:
+            continue
 
 
 def _remove_temp_dir(path) -> None:
@@ -1903,7 +2005,7 @@ def _child_env(env, opts, temp_dir, proxy_url=None, sandboxed=True) -> dict:
     sandbox: the same settings apply, only the markers are left out."""
     out = {str(k): str(v) for k, v in (os.environ if env is None else env).items()}
     if opts.hide_secret_env:
-        out = {k: v for k, v in out.items() if not _looks_secret(k)}
+        out = {k: v for k, v in out.items() if not _looks_secret(k, v)}
     if proxy_url:
         # The proxy is the only way out, so every client must be pointed at it.
         names = ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY")
@@ -1976,7 +2078,47 @@ def _explain(exc: SandboxLaunchError) -> str:
                 "sandbox; add it to READ_ONLY. " + text)
     if exc.code in (2, 3, 267):
         return "The program or its working folder was not found from inside the sandbox. " + text
+    if exc.code == 50:
+        return ("Windows refused these window, clipboard and input limits. This happens when your own "
+                "program already runs in a job object that has such limits (some launchers and CI "
+                'runners do this). Try clipboard="all" and ui_isolation="desktop". ' + text)
     return "The sandbox could not start the program. " + text
+
+
+def _code_folders() -> list:
+    """The folders that hold code which starts OUTSIDE the sandbox: the running
+    program's own folder and the one this file is in."""
+    folders = [Path(__file__).resolve().parent]
+    if getattr(sys, "frozen", False):
+        folders.append(Path(sys.executable).resolve().parent)
+    elif sys.argv and sys.argv[0] not in ("", "-c", "-m") and os.path.isfile(sys.argv[0]):
+        folders.append(Path(sys.argv[0]).resolve().parent)
+    return folders
+
+
+def _workspace_warnings(workspace, access) -> list:
+    """What run() and Popen() should say about a workspace that is wider, or
+    more dangerous to write to, than a folder a command is meant to work in."""
+    try:
+        workspace = Path(workspace).resolve()
+    except OSError:
+        return []
+    found = []
+
+    def holds(folder) -> bool:
+        return folder == workspace or workspace in folder.parents
+
+    profile = os.environ.get("USERPROFILE") or ""
+    if profile and holds(Path(profile).resolve()):
+        found.append(f"The workspace {workspace} takes in your whole user profile: the command can "
+                     + ("read and change" if access == "rw" else "read")
+                     + " your documents, settings and saved keys. Pass workspace= with the one "
+                       "folder it should work in.")
+    if access == "rw" and any(holds(folder) for folder in _code_folders()):
+        found.append("The workspace is writable and holds this program's own code. The sandboxed command "
+                     "can change code that runs OUTSIDE the sandbox on the next start. Pass a different "
+                     'workspace=, or workspace_access="ro" with a data folder in read_write.')
+    return found
 
 
 def _handle_unavailable(opts, current: SandboxStatus) -> bool:
@@ -2017,7 +2159,7 @@ def _start(command, opts, *, cwd=None, env=None, shell=None, **popen_options) ->
     except BaseException:
         clean_up()
         raise
-    proc.warnings = policy.warnings
+    proc.warnings = policy.warnings + _workspace_warnings(workspace, opts.workspace_access)
     proc.blocked_hosts = proxy.blocked if proxy is not None else []
     proc.host_errors = proxy.errors if proxy is not None else []
     return proc
@@ -2081,6 +2223,9 @@ def run(command, *, cwd=None, env=None, input=None, shell=None, **options) -> Re
 
     Always returns a ``Result``; it does not raise when the sandbox is missing
     or the launch fails. Check ``result.sandboxed`` and ``result.status``.
+
+    When the sandbox is not available the command is NOT run (``returncode``
+    is None) unless you pass ``on_unavailable="warn"`` or ``"silent"``.
     """
     opts = _options(options)
     encoding = opts.encoding or locale.getpreferredencoding(False)
@@ -2148,6 +2293,7 @@ def run(command, *, cwd=None, env=None, input=None, shell=None, **options) -> Re
         raise
     for t in threads:
         t.join(5)
+    cut_short = any(t.is_alive() for t in threads[:2])
     out, err = (_text(b"".join(c), encoding) for c in chunks)
     message = f"Stopped after {opts.timeout_seconds} seconds." if timed_out else ""
     if proc.returncode and not timed_out and re.search(
@@ -2163,6 +2309,9 @@ def run(command, *, cwd=None, env=None, input=None, shell=None, **options) -> Re
                    "list_drive_roots=True.")
     blocked = [f"NETWORK_HOSTS blocked a connection to {target}." for target in proc.blocked_hosts]
     blocked += [f"An allowed host could not be reached: {e}" for e in dict.fromkeys(proc.host_errors)]
+    if cut_short:
+        blocked.append("The command's output was still arriving five seconds after it ended; "
+                       "stdout and stderr may be incomplete.")
     return Result(proc.returncode, out, err, sandboxed=True, timed_out=timed_out,
                   status=Status.TIMED_OUT if timed_out else Status.OK, message=message,
                   warnings=list(proc.warnings) + blocked)
@@ -2177,9 +2326,10 @@ def Popen(command, *, cwd=None, env=None, shell=None, text=True, encoding=None, 
     ``kill()``. ``command``, ``cwd``, ``env`` and ``options`` are as in
     ``run()``. ``new_console=True`` gives the program its own console window.
 
-    When the sandbox is not available: with ON_UNAVAILABLE "warn" or "silent"
-    this returns an ordinary ``subprocess.Popen`` with ``sandboxed`` set to
-    False; with "error" it raises ``SandboxUnavailable``. A bad setting raises
+    When the sandbox is not available this raises ``SandboxUnavailable``
+    (ON_UNAVAILABLE "error", the default here); with "warn" or "silent" it
+    returns an ordinary ``subprocess.Popen`` with ``sandboxed`` set to False.
+    A bad setting raises
     ``PolicyError``; a failed launch raises ``SandboxLaunchError``.
     """
     opts = _options(options)
@@ -2490,7 +2640,12 @@ def _main(argv=None) -> int:
     ap.add_argument("--deny", action="append", metavar="PATH", help="blocked path (repeatable)")
     ap.add_argument("--no-windows", action="store_true", default=None, help="the command may not open windows")
     ap.add_argument("--timeout", type=float, metavar="SECONDS", default=None)
-    ap.add_argument("--required", action="store_true", help="do not run at all if the sandbox is unavailable")
+    ap.add_argument("--allow-unsandboxed", action="store_true",
+                    help="if the sandbox is unavailable, warn and run the command WITHOUT it "
+                         "(default: do not run)")
+    ap.add_argument("--required", action="store_true",
+                    help="do not run at all if the sandbox is unavailable (this is the default; "
+                         "kept for older scripts)")
     args = ap.parse_args(argv)
     if args.probe:
         current = status()
@@ -2506,7 +2661,7 @@ def _main(argv=None) -> int:
                  "network_rules": args.rule, "network_proxy": args.proxy,
                  "read_write": args.read_write, "read_only": args.read_only, "deny": args.deny,
                  "no_windows": args.no_windows, "timeout_seconds": args.timeout,
-                 "on_unavailable": "error" if args.required else None}
+                 "on_unavailable": "error" if args.required else "warn" if args.allow_unsandboxed else None}
         result = run(args.run, **{k: v for k, v in given.items() if v is not None})
         for stream, text in ((sys.stdout, result.stdout), (sys.stderr, result.stderr)):
             # A redirected stream may use a code page that lacks some characters:

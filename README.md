@@ -10,10 +10,10 @@ import pymxc; pymxc.enable()
 
 - **One file.** Copy `pymxc.py` into your project. Standard library only; nothing to `pip install`.
 - **Nothing to set up on Windows.** No MXC SDK, no installer, no administrator rights, no changes to folder permissions. Windows itself enforces the policy.
-- **Safe to ship everywhere.** On a computer without the sandbox (older Windows, Linux, macOS) the file still imports and tells you so with a status code. By default your program then runs unsandboxed after one warning; one setting makes it refuse instead.
+- **Safe to ship everywhere.** On a computer without the sandbox (older Windows, Linux, macOS) the file still imports and tells you so with a status code. By default `enable()` then lets your own program carry on unsandboxed after one warning, while `run()` and `Popen()` refuse to start a command without the sandbox. One setting changes either.
 - **Python 3.12 or newer.**
 
-A sandboxed program can read its own folder and the Python it runs on, write to the data folders you name, and nothing else of yours: not your documents, not your other projects, not the network, unless you allow it.
+A sandboxed program can read its own folder and the Python it runs on, write to the data folders you name, and nothing else of your files: not your documents, not your other projects, not the network, unless you allow it. Some things stay visible that are not files of yours, such as the screen and Windows' own folders; see [Limits you should know](#limits-you-should-know).
 
 ## Contents
 
@@ -36,7 +36,7 @@ A sandboxed program can read its own folder and the Python it runs on, write to 
 | | |
 |---|---|
 | Python | 3.12 or newer (older versions get a clear `ImportError`) |
-| Windows | Windows 11 **24H2 build 26100.9278** or **25H2 build 26200.9278**, or later |
+| Windows | Windows 11 **24H2 build 26100.9278** or **25H2 build 26200.9278**, or later. Microsoft also lists 26H1 build 28000.2804 and 26H2 build 26300.9550 as the first builds of those releases. |
 | Rights | An ordinary user account. No administrator rights. |
 | Install | Nothing. The sandbox is part of Windows once the updates above are in. |
 
@@ -146,6 +146,8 @@ print(result.ok)           # True when it ran and exited with 0
 
 `run()` always returns a `Result`. It does not raise because the sandbox is missing, a setting is wrong, or the program could not be started; look at `status` and `message` instead.
 
+**On a computer without the sandbox the command is not run.** `result.returncode` is `None` and `result.status` says why. Pass `on_unavailable="warn"` to run it unsandboxed instead; see [When the sandbox is not available](#when-the-sandbox-is-not-available).
+
 | Argument | Meaning |
 |---|---|
 | `command` | A string (through `cmd.exe`, so `&&`, `>` and `%VAR%` work) or a list of arguments (no shell; `&` and quotes in arguments are passed as they are) |
@@ -169,7 +171,7 @@ proc.wait()                     # or proc.wait(timeout=10), proc.poll(), proc.ki
 
 It has the familiar parts of `subprocess.Popen`: `stdout`, `stderr`, `stdin` (pass `stdin=True`), `pid`, `poll()`, `wait()`, `kill()`, `returncode`. `kill()` stops the command and everything it started. `proc.sandboxed` says whether it is contained, and `proc.warnings` lists settings that were adjusted.
 
-Unlike `run()`, `Popen()` raises: `PolicyError` for a bad setting, `SandboxLaunchError` when Windows will not start the program, `SandboxUnavailable` when there is no sandbox and you asked for `"error"`.
+Unlike `run()`, `Popen()` raises: `PolicyError` for a bad setting, `SandboxLaunchError` when Windows will not start the program, `SandboxUnavailable` when there is no sandbox (unless you pass `on_unavailable="warn"` or `"silent"`).
 
 ### `status()` — ask first
 
@@ -197,7 +199,7 @@ A misspelled option raises `TypeError` and lists the valid names.
 
 | Setting | Default | Other values |
 |---|---|---|
-| `ON_UNAVAILABLE` | `"warn"`: one warning, then run without the sandbox | `"silent"`: run without it, say nothing. `"error"`: do not run. |
+| `ON_UNAVAILABLE` | `None`: `"warn"` for `enable()`, `"error"` for `run()` and `Popen()` | `"warn"`: one warning, then run without the sandbox. `"silent"`: run without it, say nothing. `"error"`: do not run. |
 
 ### Files
 
@@ -239,7 +241,7 @@ Paths that do not exist are skipped with a warning.
 | `"intranet"` | no | yes |
 | `"all"` | yes | yes |
 
-- **"Private" means the address ranges reserved for it:** `10.x`, `172.16`–`172.31.x`, `192.168.x`, `169.254.x`, `100.64`–`100.127.x`, and `fc00::/7` and `fe80::/10` for IPv6. That covers home and office networks, most intranets and VPNs, and the metadata address of cloud machines.
+- **"Private" means the address ranges reserved for it:** `10.x`, `172.16`–`172.31.x`, `192.168.x`, `169.254.x`, `100.64`–`100.127.x`, and `fc00::/7` and `fe80::/10` for IPv6. That covers home and office networks, most intranets and VPNs, and the metadata address of cloud machines. Multicast and broadcast addresses (`224.x`–`239.x`, `255.255.255.255`, `ff00::/8`) count as private too: they are how a program finds printers, televisions and other devices on the local network.
 - **pymxc gives Windows these ranges itself.** Left to Windows, the line depends on how it classes the network you are on: on a network it treats as public, a program allowed "the internet" also reaches the router and every other local device. With the ranges spelled out, each mode means the same on every network.
 - **An organisation that uses public address ranges internally is not covered.** Its servers count as "internet" here. List its ranges with `NETWORK = "custom"`, or its servers with `"hosts"`.
 - **`"intranet"` and `"all"` also let the program accept connections from the local network.** Windows grants private-network access in both directions only.
@@ -261,7 +263,7 @@ A full example is in [Recipes](#recipes).
 | `"*.googleapis.com"` | Every subdomain of `googleapis.com` (not `googleapis.com` itself) |
 | `"internal.example.com:8443"` | That host on port 8443 |
 
-How it works: pymxc starts a small filter inside *your* program, outside the sandbox, listening on `127.0.0.1`. Windows lets the sandboxed program connect to that filter and to nothing else. The filter passes a connection on only when the requested host is listed. It does not decrypt anything; traffic stays encrypted between the program and the host.
+How it works: pymxc starts a small filter inside *your* program, outside the sandbox, listening on `127.0.0.1`. Windows lets the sandboxed program connect to that filter and to no other address. The filter passes a connection on only when the requested host is listed. It does not decrypt anything; traffic stays encrypted between the program and the host.
 
 What to know:
 
@@ -270,6 +272,8 @@ What to know:
 - **Blocked attempts are reported.** `run()` lists them in `result.warnings`; `enable()` prints one line per blocked host on stderr. That is how you find a host you forgot to list.
 - **A listed host can receive anything the program can read.** Allowing an LLM API means file contents can be sent to that API.
 - **Other programs on your computer can use the filter too** while it runs, but only to reach the hosts you listed.
+- **The program can still look up any host name.** Windows answers name lookups for it, listed or not. It cannot connect to what it looked up, but a lookup is itself a small message to whoever runs that domain, so a determined program can leak a little data this way. Only `NETWORK = "off"` stops lookups.
+- **A name covers everything served under it.** Allowing an API host allows every account on that API, not only yours, and a wildcard such as `*.googleapis.com` includes that provider's file storage.
 
 #### Allowing addresses (`NETWORK = "custom"`)
 
@@ -286,13 +290,15 @@ Addresses are numeric. Windows has no host-name rules for this sandbox; to allow
 
 ### Windows, clipboard and input
 
-By default nothing in this group is restricted, so graphical programs behave normally, with one exception: a command started with `run()` or `Popen()` cannot read the clipboard. Microsoft's MXC defaults are the opposite. The strict value is shown last in each row.
+By default little in this group is restricted, so graphical programs behave normally. The exceptions: a command started with `run()` or `Popen()` cannot read the clipboard and cannot reach other programs' windows. Microsoft's MXC defaults are the opposite. The strict value is shown last in each row.
+
+**A program that may open windows can also read the screen**, that is, take screenshots of whatever is showing. Only `NO_WINDOWS = True` stops that, and it stops a good deal more (see the table).
 
 | Setting | Default | Other values |
 |---|---|---|
-| `NO_WINDOWS` | `False` | `True`: no windows or graphics at all. tkinter, Qt and message boxes fail. Best for command-line tools. |
-| `CLIPBOARD` | `None` | `"all"`, `"read"` (paste only), `"write"` (copy only), `"none"`. `None` means `"all"` for `enable()`, so your own program can paste, and `"write"` for `run()` and `Popen()`, so a command you do not trust cannot read what you last copied. |
-| `UI_ISOLATION` | `"desktop"` | `"handles"` (cannot reach other programs' windows), `"atoms"` (private atom table), `"container"` (both) |
+| `NO_WINDOWS` | `False` | `True`: no windows or graphics at all, and no reading the screen. tkinter, Qt and message boxes fail. So does much else that loads the window system: on the computer this was tested on, Python's `ssl` and `ctypes` modules (so no HTTPS from Python and no `pip install`), `git` and PowerShell. Plain Python and `cmd.exe` built-ins still run. Try your command with it before relying on it. |
+| `CLIPBOARD` | `None` | `"all"`, `"read"` (paste only), `"write"` (copy only), `"none"`. `None` means `"all"` for `enable()`, so your own program can paste, and `"write"` for `run()` and `Popen()`, so a command you do not trust cannot read what you last copied. Pasting also needs `UI_ISOLATION` `"desktop"` or `"atoms"`. |
+| `UI_ISOLATION` | `None` | `"desktop"` (may see other programs' windows and read their titles), `"handles"` (cannot reach other programs' windows or paste what they copied), `"atoms"` (private atom table), `"container"` (handles and atoms). `None` means `"desktop"` for `enable()` and `"handles"` for `run()` and `Popen()`; a command you allow to paste (`CLIPBOARD` `"all"` or `"read"`) gets `"desktop"`, because Windows hands clipboard contents only to a program that can reach other windows. |
 | `DESKTOP_CONTROL` | `True` | `False`: cannot switch desktops, log off or shut down |
 | `SYSTEM_SETTINGS` | `"all"` | `"parameters"`, `"display"`, `"none"`: which system-wide UI settings the program may change |
 | `IME` | `True` | `False`: input method editors cannot load into the program |
@@ -304,7 +310,7 @@ By default nothing in this group is restricted, so graphical programs behave nor
 |---|---|---|
 | `TIMEOUT_SECONDS` | `None` | `run()`: stop the command, and everything it started, after this many seconds |
 | `ENCODING` | `"utf-8"` | `run()`: how output is decoded. `None` uses the Windows system code page; `"oem"` suits `cmd.exe` built-ins such as `dir`. |
-| `HIDE_SECRET_ENV` | `False` | By default the program receives all your environment variables, API keys included. `True` drops the ones whose names look like keys, tokens or passwords. It goes by name only; for untrusted commands, pass `env=` with just what they need. |
+| `HIDE_SECRET_ENV` | `False` | By default the program receives all your environment variables, API keys included. `True` drops the ones whose names look like keys, tokens or passwords, and any whose value is a URL with a password in it. It is a best guess and can miss one; for untrusted commands, pass `env=` with just what they need. Neither hides variables saved for your user account (with `setx` or in System Properties): those are also kept in the registry, which the program can read. |
 | `EXTRA_ENV` | `{}` | Environment variables to add or replace |
 | `CONSOLE` | `True` | `enable()`: keep the console. `False` for programs started with `pythonw`. |
 | `WAIT_FOR_CHILD_PROCESSES` | `False` | `True`: a run ends only when everything the command started has ended. For launchers that use `start /b` and exit. |
@@ -318,19 +324,23 @@ By default nothing in this group is restricted, so graphical programs behave nor
 
 `ON_UNAVAILABLE` decides. It applies on Windows builds without the feature and on Linux and macOS alike.
 
-| | `"warn"` (default) | `"silent"` | `"error"` |
+| | `"warn"` | `"silent"` | `"error"` |
 |---|---|---|---|
-| `enable()` | Warns once on stderr, returns `False`; your program continues unsandboxed | Returns `False` quietly | Prints the reason and exits with the status code |
-| `run()` | Warns once, runs the command unsandboxed; `result.sandboxed` is `False` | Same, no warning | Does not run; `result.returncode` is `None`, `result.status` says why |
-| `Popen()` | Warns once, returns an ordinary `subprocess.Popen` with `sandboxed = False` | Same, no warning | Raises `SandboxUnavailable` |
+| `enable()` | **Default.** Warns once on stderr, returns `False`; your program continues unsandboxed | Returns `False` quietly | Prints the reason and exits with the status code |
+| `run()` | Warns once, runs the command unsandboxed; `result.sandboxed` is `False` | Same, no warning | **Default.** Does not run; `result.returncode` is `None`, `result.status` says why |
+| `Popen()` | Warns once, returns an ordinary `subprocess.Popen` with `sandboxed = False` | Same, no warning | **Default.** Raises `SandboxUnavailable` |
 
-Choose `"error"` when running unsandboxed would be unsafe, for example when the command comes from an AI model:
+The defaults differ on purpose. `enable()` sandboxes your own program, which is no more dangerous without the sandbox than it was before you added the line. `run()` and `Popen()` start commands you may not trust, for example ones written by an AI model, so they are never started unsandboxed unless you say so:
 
 ```python
-result = pymxc.run(command_from_model, on_unavailable="error")
+result = pymxc.run(command_from_model)
 if result.returncode is None:
     print("Not run:", result.message)
+
+result = pymxc.run(my_own_build_script, on_unavailable="warn")   # fine to run unsandboxed
 ```
+
+Setting `pymxc.ON_UNAVAILABLE` (or editing it in the file) applies one choice to all three.
 
 A run without the sandbox still follows the settings that apply to it: `hide_secret_env`, `extra_env` and `python_on_path` shape the environment, `READ_WRITE` folders are created, and output is decoded the same way.
 
@@ -477,6 +487,7 @@ pymxc.enable()
 - **Your user profile is invisible.** That includes `~\.gitconfig` (see `GRANT_GIT_CONFIG`), SSH keys and browser data.
 - **Saved credentials.** Windows Credential Manager cannot be read, so git credential helpers and `keyring` find nothing. For your own API key, read it before `enable()` as shown under [`enable()`](#1-enable--sandbox-your-whole-program).
 - **Some programs cannot start at all:** `conda.exe` and `activate.bat`, Microsoft Store apps, and Office automation. `python -m pip` works.
+- **tkinter needs `list_drive_roots=True`.** Without it Tcl cannot find its own files and stops with "Can't find a usable init.tcl".
 - **Network errors look like permission errors.** A blocked connection fails with `PermissionError` / WinError 10013. Intranet, VPN and local addresses need `network="intranet"` or `"all"`, not `"internet"`.
 - **Environment markers.** Inside, `PYMXC_SANDBOXED` is `1` and `PYMXC_TEMP` holds the temp folder.
 
@@ -484,8 +495,11 @@ When a sandboxed command fails with an access error, `result.message` says so an
 
 ## Limits you should know
 
-- **Writable folders are fully usable.** A program that may write a folder may also change the code in it, and code that starts outside the sandbox later runs with your full permissions. `enable()` keeps the program's own folder read-only for this reason. `run()` and `Popen()` make their workspace writable by default: when the current folder holds your own program's code, pass a different `workspace=`, or `workspace_access="ro"` with a data folder in `read_write`.
+- **Writable folders are fully usable.** A program that may write a folder may also change the code in it, and code that starts outside the sandbox later runs with your full permissions. `enable()` keeps the program's own folder read-only for this reason. `run()` and `Popen()` make their workspace writable by default: when the current folder holds your own program's code, pass a different `workspace=`, or `workspace_access="ro"` with a data folder in `read_write`. They say so in `result.warnings` / `proc.warnings` when the workspace holds the calling program's code or takes in your whole user profile.
 - **Files written inside can be run outside later.** The sandbox contains the program while it runs; it does not vet what it leaves behind.
+- **Hard links carry access with them.** Windows decides by path. If a folder you grant contains a hard link to a file that also lives somewhere else, the program can read that file, and change it when the folder is writable, wherever else it lives; `DENY` does not cover a file that has a second name outside the denied folder. The program cannot create such links itself, but package tools do: uv, pnpm and conda link files from a shared cache into each environment, so a writable folder holding such an environment can give write access to the shared cache. Build environments that live in a writable folder with copies (for uv, `UV_LINK_MODE=copy`).
+- **The screen is readable.** Unless `NO_WINDOWS` is on, a sandboxed program can take screenshots. With `UI_ISOLATION = "desktop"` (the default for `enable()`) it can also read the titles of your other windows.
+- **Windows' own folders and parts of the registry are readable.** That includes `C:\Windows`, `C:\Program Files`, the list of installed programs, and the environment variables saved for your user account. Writing to the registry and to `C:\Windows` was blocked when tried. A key you saved with `setx` is readable this way even when it is left out of the program's environment.
 - **With network access, the program can send out anything it can read.** In every mode except `"off"`, Windows also looks up host names for the program, including public ones under `"intranet"`. The program cannot connect to them, but a name lookup is itself a small message that leaves the computer.
 - **`LIST_DRIVE_ROOTS` reveals file names** across the drive, including inside your user profile. It is off by default.
 - **`permissiveLearningMode` in `EXTRA_CAPABILITIES` turns enforcement off.** Windows only records. pymxc warns when it is set.
@@ -514,7 +528,8 @@ Options for `--run`:
 | `--read-write PATH`, `--read-only PATH`, `--deny PATH` | Repeatable |
 | `--no-windows` | The command may not open windows |
 | `--timeout SECONDS` | |
-| `--required` | Do not run at all if the sandbox is unavailable |
+| `--allow-unsandboxed` | If the sandbox is unavailable, warn and run the command without it. Without this option the command is not run. |
+| `--required` | Do not run at all if the sandbox is unavailable. This is the default now; the option is kept for older scripts. |
 
 The exit code is the command's own, or a [status code](#status-codes) (101–107) when it did not run or was stopped.
 
@@ -542,7 +557,8 @@ Starting a sandboxed process costs a few tens of milliseconds more than an ordin
 On Windows 11 25H2 build 26200.9974 with Python 3.12, 3.13 and 3.14:
 
 - `python pymxc.py --selftest`: the encoder produces the reference bytes, and Windows enforces the policy (writes and reads outside denied, deny path wins, network blocked, temp folder works).
-- `python -m unittest discover -s tests -v`: 76 tests. They cover file access (read-write, read-only, deny, a deny path that appears later, a single granted file), network off, the host allow-list, loopback, exit codes and arguments, standard input, timeouts stopping the whole process tree, `Popen` streaming and `kill`, `enable()` for a script and for `python -m`, `enable()` keeping the program's own folder read-only, `NO_WINDOWS`, `CLIPBOARD = "none"`, the name-listing switch, temp folder cleanup, every `ON_UNAVAILABLE` mode, and the status codes.
+- `python -m unittest discover -s tests -v`: 88 tests. They cover file access (read-write, read-only, deny, a deny path that appears later, a single granted file), network off, the host allow-list, loopback, exit codes and arguments, standard input, timeouts stopping the whole process tree, `Popen` streaming and `kill`, `enable()` for a script and for `python -m`, `enable()` keeping the program's own folder read-only, `NO_WINDOWS`, `CLIPBOARD = "none"`, the name-listing switch, temp folder cleanup, every `ON_UNAVAILABLE` mode, the status codes, and that a command cannot see other programs' windows by default.
+- An audit on the same build tried about 130 ways out of the sandbox (junctions, other spellings of a path, the registry, other processes, window messages, each network mode against local and public addresses). What got through is listed under [Limits you should know](#limits-you-should-know); multicast traffic to the local network under `"internet"` got through too and is now blocked.
 - `enable()` in a real console window, with redirected output, and with captured output.
 - `python pymxc.py --selftest` also passed on a second computer running a different Windows build (26300.9974, policy version 1.1). Only the selftest was run there, not the full test suite.
 - `NETWORK = "hosts"` against real servers: with only `generativelanguage.googleapis.com` listed, the Google Gemini endpoint answered, `example.com` was refused, and a direct socket was blocked. pip downloaded a package with only `pypi.org` and `files.pythonhosted.org` listed.

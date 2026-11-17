@@ -254,17 +254,118 @@ class Settings(unittest.TestCase):
     def test_ui_mask(self):
         mask = lambda **kw: pymxc._ui_mask(pymxc._options(kw))  # noqa: E731
         self.assertEqual(mask(clipboard="all"), 0)
-        # CLIPBOARD = None: a command cannot read the clipboard; your own program (enable()) can.
+        # CLIPBOARD and UI_ISOLATION = None: a command cannot read the clipboard or reach
+        # other programs' windows; your own program (enable()) can.
         self.assertIsNone(pymxc.CLIPBOARD)
-        self.assertEqual(mask(), pymxc.UI_READCLIPBOARD)
+        self.assertIsNone(pymxc.UI_ISOLATION)
+        self.assertEqual(mask(), pymxc.UI_READCLIPBOARD | pymxc.UI_HANDLES)
         self.assertEqual(pymxc._ui_mask(pymxc._options({}, own_program=True)), 0)
-        self.assertEqual(mask(clipboard="none"), pymxc.UI_READCLIPBOARD | pymxc.UI_WRITECLIPBOARD)
+        self.assertEqual(mask(clipboard="none"),
+                         pymxc.UI_READCLIPBOARD | pymxc.UI_WRITECLIPBOARD | pymxc.UI_HANDLES)
+        # Pasting needs reach to other programs' windows, so allowing it keeps that reach.
         self.assertEqual(mask(clipboard="read"), pymxc.UI_WRITECLIPBOARD)
+        self.assertEqual(mask(ui_isolation="desktop"), pymxc.UI_READCLIPBOARD)
         self.assertEqual(mask(clipboard="all", ui_isolation="container"), pymxc.UI_HANDLES | pymxc.UI_GLOBALATOMS)
         self.assertEqual(mask(clipboard="none", ui_isolation="container", desktop_control=False,
                               system_settings="none", ime=False, input_injection=False), 0x3FF)
         with self.assertRaises(pymxc.PolicyError):
             mask(clipboard="sometimes")
+
+    def test_pasting_with_window_isolation_is_a_warning(self):
+        with tempfile.TemporaryDirectory() as ws:
+            build = lambda **kw: pymxc._build_policy(pymxc._options(kw), ws).warnings  # noqa: E731
+            self.assertTrue(any("cannot paste" in w for w in build(clipboard="all", ui_isolation="handles")))
+            self.assertFalse(any("cannot paste" in w for w in build(clipboard="all")))
+            self.assertFalse(any("cannot paste" in w for w in build()))
+
+    def test_defaults_that_depend_on_the_caller(self):
+        command, own = pymxc._options({}), pymxc._options({}, own_program=True)
+        # A command you may not trust: never started unsandboxed, cannot paste or see other windows.
+        self.assertEqual((command.on_unavailable, command.clipboard, command.ui_isolation, command.workspace_access),
+                         ("error", "write", "handles", "rw"))
+        # Your own program: carries on with a warning, behaves like any desktop program.
+        self.assertEqual((own.on_unavailable, own.clipboard, own.ui_isolation, own.workspace_access),
+                         ("warn", "all", "desktop", "ro"))
+        with mock.patch.object(pymxc, "ON_UNAVAILABLE", "silent"):
+            self.assertEqual(pymxc._options({}).on_unavailable, "silent")
+            self.assertEqual(pymxc._options({}, own_program=True).on_unavailable, "silent")
+
+    def test_private_ranges_cover_multicast_and_broadcast(self):
+        import ipaddress
+        ranges = [ipaddress.ip_network(r) for r in pymxc._PRIVATE_RANGES]
+
+        def covered(text):
+            address = ipaddress.ip_address(text)
+            return any(address in r for r in ranges if r.version == address.version)
+
+        for address in ("192.168.1.1", "10.9.8.7", "169.254.169.254", "239.255.255.250", "224.0.0.251",
+                        "255.255.255.255", "ff02::fb", "ff02::c", "fe80::1", "fd00::1"):
+            self.assertTrue(covered(address), address)
+        for address in ("1.1.1.1", "8.8.8.8", "223.255.255.255", "2606:4700:4700::1111"):
+            self.assertFalse(covered(address), address)
+
+    def test_secret_looking_names(self):
+        for name in ("OPENAI_API_KEY", "GITHUB_TOKEN", "GH_PAT", "MYSQL_PWD", "DOCKER_AUTH_CONFIG", "NPM_AUTH",
+                     "SENTRY_DSN", "SSH_PASSPHRASE", "SESSION_COOKIE", "SLACK_WEBHOOK_URL",
+                     "AZURE_STORAGE_CONNECTION_STRING", "ConnectionString"):
+            self.assertTrue(pymxc._looks_secret(name), name)
+        for name in ("PATH", "PWD", "OLDPWD", "KEYBOARD", "MONKEY", "PATHEXT", "AUTHOR", "PATTERN", "HOME_DIR"):
+            self.assertFalse(pymxc._looks_secret(name), name)
+        # A URL with a password in it is a secret whatever the variable is called.
+        self.assertTrue(pymxc._looks_secret("DATABASE_URL", "postgres://app:s3cret@db.example:5432/x"))
+        self.assertFalse(pymxc._looks_secret("DATABASE_URL", "postgres://db.example:5432/x"))
+        self.assertFalse(pymxc._looks_secret("HOMEPAGE", "https://example.com/a@b"))
+        out = pymxc._child_env({"REDIS_URL": "redis://:pw@cache:6379", "SITE": "https://example.com"},
+                               pymxc._options({"hide_secret_env": True}), None)
+        self.assertNotIn("REDIS_URL", out)
+        self.assertIn("SITE", out)
+
+    @unittest.skipUnless(sys.platform == "win32", "temp folders are only made for the Windows sandbox")
+    def test_temp_folders_are_new_each_time_and_leftovers_are_swept(self):
+        first, second = pymxc._new_temp_dir(), pymxc._new_temp_dir()
+        base = Path(first).parent
+        gone = subprocess.Popen([PY, "-c", "pass"])
+        gone.wait()
+        leftover = base / f"run-{gone.pid}-1-abcdef"   # from a program that has ended
+        mine = base / f"run-{os.getpid()}-999-abcdef"  # from this one, still running
+        other = base / "not-a-run-folder"
+        try:
+            self.assertNotEqual(first, second)
+            self.assertEqual(os.listdir(first), [])
+            for folder in (leftover, mine, other):
+                folder.mkdir(exist_ok=True)
+            (leftover / "stale.txt").write_text("x")
+            del gone  # let go of the process handle, as a program that ended long ago would have
+            pymxc._sweep_temp_dirs(base)
+            self.assertFalse(leftover.exists())
+            self.assertTrue(mine.exists() and other.exists())
+        finally:
+            for folder in (leftover, mine, other, Path(first), Path(second)):
+                shutil.rmtree(folder, ignore_errors=True)
+
+    def test_workspace_warnings_for_commands(self):
+        code = Path(pymxc.__file__).resolve().parent
+        with tempfile.TemporaryDirectory() as ws:
+            self.assertEqual(pymxc._workspace_warnings(ws, "rw"), [])
+        self.assertTrue(any("own code" in w for w in pymxc._workspace_warnings(code, "rw")))
+        self.assertTrue(any("own code" in w for w in pymxc._workspace_warnings(code.parent, "rw")))
+        self.assertFalse(any("own code" in w for w in pymxc._workspace_warnings(code, "ro")))
+        if os.environ.get("USERPROFILE"):
+            for access in ("rw", "ro"):
+                self.assertTrue(any("user profile" in w for w in pymxc._workspace_warnings(
+                    os.environ["USERPROFILE"], access)), access)
+
+    def test_notes_are_returned_as_stored(self):
+        notes = []
+        self.assertEqual(pymxc._remember(notes, "a\x1b[2Jb"), "a?[2Jb")
+        self.assertEqual(pymxc._remember(notes, "a\x1b[2Jb"), "")       # known already
+        self.assertEqual(notes, ["a?[2Jb"])
+
+    def test_launch_errors_are_explained(self):
+        refused = pymxc._explain(pymxc.SandboxLaunchError("CreateProcessW failed: not supported (50)", 50))
+        self.assertIn("job object", refused)
+        denied = pymxc._explain(pymxc.SandboxLaunchError("CreateProcessW failed: Access is denied (5)", 5))
+        self.assertIn("READ_ONLY", denied)
 
     def test_bad_values_are_policy_errors(self):
         with tempfile.TemporaryDirectory() as ws:
@@ -487,10 +588,34 @@ class Fallback(unittest.TestCase):
     def test_status_codes_are_stable(self):
         self.assertEqual([int(s) for s in pymxc.Status], [0, 101, 102, 103, 104, 105, 106, 107])
 
+    def test_commands_are_not_run_unsandboxed_unless_asked(self):
+        with tempfile.TemporaryDirectory() as ws, no_sandbox(), mock.patch("sys.stderr") as err:
+            marker = Path(ws, "ran.txt")
+            result = pymxc.run([PY, "-c", f"open(r'{marker}', 'w').close()"])
+            self.assertEqual((result.returncode, result.sandboxed, result.status),
+                             (None, False, pymxc.Status.WINDOWS_TOO_OLD))
+            self.assertIn("Not run", result.message)
+            with self.assertRaises(pymxc.SandboxUnavailable):
+                pymxc.Popen([PY, "-c", f"open(r'{marker}', 'w').close()"])
+            self.assertFalse(marker.exists())
+            err.write.assert_not_called()
+
+    def test_command_line_does_not_run_unsandboxed_unless_asked(self):
+        import contextlib
+        import io
+        with tempfile.TemporaryDirectory() as ws, no_sandbox():
+            out, err = io.StringIO(), io.StringIO()
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                refused = pymxc._main(["--workspace", ws, "--run", "echo ran"])
+                allowed = pymxc._main(["--workspace", ws, "--run", "echo ran", "--allow-unsandboxed"])
+        self.assertEqual((refused, allowed), (int(pymxc.Status.WINDOWS_TOO_OLD), 0))
+        self.assertEqual(out.getvalue().split(), ["ran"])
+        self.assertIn("WITHOUT the sandbox", err.getvalue())
+
     def test_run_warns_once_and_runs_unsandboxed(self):
         with no_sandbox(), mock.patch("sys.stderr") as err:
-            first = pymxc.run([PY, "-c", "print('ran')"])
-            pymxc.run([PY, "-c", "print('ran')"])
+            first = pymxc.run([PY, "-c", "print('ran')"], on_unavailable="warn")
+            pymxc.run([PY, "-c", "print('ran')"], on_unavailable="warn")
         self.assertEqual((first.returncode, first.stdout.strip(), first.sandboxed), (0, "ran", False))
         self.assertEqual(first.status, pymxc.Status.WINDOWS_TOO_OLD)
         self.assertTrue(first.ok)
@@ -842,6 +967,33 @@ class LiveSandbox(unittest.TestCase):
             self.skipTest("the clipboard is empty or unreadable on this desktop")
         self.assertEqual(self.run_py(code, clipboard="none").stdout.split()[-1], "False")
         self.assertEqual(self.run_py(code).stdout.split()[-1], "False")  # a command cannot read it by default
+
+    def test_a_command_cannot_see_other_windows_by_default(self):
+        code = """
+            import ctypes
+            u = ctypes.WinDLL('user32')
+            seen = []
+            proto = ctypes.WINFUNCTYPE(ctypes.c_int, ctypes.c_void_p, ctypes.c_void_p)
+            def each(hwnd, _):
+                if u.GetWindowTextLengthW(ctypes.c_void_p(hwnd)):
+                    seen.append(1)
+                return 1
+            u.EnumWindows(proto(each), None)
+            print(len(seen))
+        """
+        if self.run_py(code, ui_isolation="desktop").stdout.strip() in ("", "0"):
+            self.skipTest("no titled windows on this desktop")
+        self.assertEqual(self.run_py(code).stdout.strip(), "0")
+        self.assertEqual(self.run_py(code, ui_isolation="handles", clipboard="all").stdout.strip(), "0")
+
+    def test_workspace_holding_the_callers_code_is_a_warning(self):
+        self.assertEqual(pymxc.run("echo x", workspace=str(self.ws)).warnings, [])
+        (self.ws / "app").mkdir()
+        with mock.patch.object(pymxc, "_code_folders", return_value=[self.ws / "app"]):
+            risky = pymxc.run("echo x", workspace=str(self.ws))
+            read_only = pymxc.run("echo x", workspace=str(self.ws), workspace_access="ro")
+        self.assertTrue(any("own code" in w for w in risky.warnings), risky.warnings)
+        self.assertEqual(read_only.warnings, [])
 
     def test_policy_and_launch_errors_are_results(self):
         bad = pymxc.run("echo x", workspace=str(self.ws), network="sideways")
