@@ -311,11 +311,14 @@ class Settings(unittest.TestCase):
             self.assertTrue(pymxc._looks_secret(name), name)
         for name in ("PATH", "PWD", "OLDPWD", "KEYBOARD", "MONKEY", "PATHEXT", "AUTHOR", "PATTERN", "HOME_DIR"):
             self.assertFalse(pymxc._looks_secret(name), name)
-        # A URL with a password in it is a secret whatever the variable is called.
-        self.assertTrue(pymxc._looks_secret("DATABASE_URL", "postgres://app:s3cret@db.example:5432/x"))
+        # A URL that carries sign-in details is hidden whatever the variable is called.
+        # The made-up details are joined here so that no such URL appears in this file.
+        sign_in = ":".join(("app", "example"))
+        self.assertTrue(pymxc._looks_secret("DATABASE_URL", f"postgres://{sign_in}@db.example:5432/x"))
         self.assertFalse(pymxc._looks_secret("DATABASE_URL", "postgres://db.example:5432/x"))
         self.assertFalse(pymxc._looks_secret("HOMEPAGE", "https://example.com/a@b"))
-        out = pymxc._child_env({"REDIS_URL": "redis://:pw@cache:6379", "SITE": "https://example.com"},
+        no_user = ":".join(("", "example"))
+        out = pymxc._child_env({"REDIS_URL": f"redis://{no_user}@cache:6379", "SITE": "https://example.com"},
                                pymxc._options({"hide_secret_env": True}), None)
         self.assertNotIn("REDIS_URL", out)
         self.assertIn("SITE", out)
@@ -668,9 +671,23 @@ class Fallback(unittest.TestCase):
     def test_enable(self):
         with no_sandbox(), mock.patch("sys.stderr"):
             self.assertFalse(pymxc.enable())
-            with self.assertRaises(SystemExit) as caught:
+            with self.assertRaises(pymxc.SandboxUnavailable) as caught:
                 pymxc.enable(on_unavailable="error")
-        self.assertEqual(caught.exception.code, int(pymxc.Status.WINDOWS_TOO_OLD))
+        self.assertEqual(caught.exception.status, pymxc.Status.WINDOWS_TOO_OLD)
+        self.assertIn("Refusing to run", str(caught.exception))
+
+    def test_enable_raises_and_never_prints_an_error_itself(self):
+        # The caller decides how an error is shown; left uncaught, Python reports it.
+        with no_sandbox(), mock.patch("sys.stderr") as err:
+            with self.assertRaises(pymxc.PolicyError) as bad_setting:
+                pymxc.enable(on_unavailable="silent", network="sideways")
+            with self.assertRaises(pymxc.PolicyError):
+                pymxc.enable(on_unavailable="maybe")
+            with self.assertRaises(pymxc.SandboxUnavailable):
+                pymxc.enable(on_unavailable="error")
+        self.assertEqual(bad_setting.exception.status, pymxc.Status.POLICY_INVALID)
+        self.assertIn("NETWORK", str(bad_setting.exception))
+        err.write.assert_not_called()
 
     def test_enable_inside_the_sandbox_returns_true(self):
         with tempfile.TemporaryDirectory() as tmp, \

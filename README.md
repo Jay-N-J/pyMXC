@@ -122,6 +122,14 @@ Things to know:
   pymxc.enable(network="hosts", network_hosts=["api.example.com"])
   ```
 - `input()`, `print()`, Ctrl+C, redirected output (`> out.txt`) and pipes all keep working. After Ctrl+C your program gets five seconds to finish its own clean-up before it is stopped; a second Ctrl+C stops it at once.
+- **Errors are raised, not printed.** A misspelled setting raises `PolicyError`; a start that Windows refuses raises `SandboxLaunchError`; no sandbox with `on_unavailable="error"` raises `SandboxUnavailable`. All three are `pymxc.SandboxError` and carry a `status` code. If you do nothing, Python reports the error and your program ends before any of it has run. To end with the status code, or to show the message in your own window or log, catch it:
+
+  ```python
+  try:
+      pymxc.enable(read_write=["data"])
+  except pymxc.SandboxError as error:
+      sys.exit(int(error.status))      # for example 105 for a bad setting
+  ```
 - It needs a script, a module (`python -m`) or a frozen program to restart. In an interactive session or `python -c` it behaves as if the sandbox were unavailable.
 - `pymxc.is_sandboxed()` tells you at any time whether you are inside. It asks Windows, so setting `PYMXC_SANDBOXED` by hand does not count.
 
@@ -326,7 +334,7 @@ By default little in this group is restricted, so graphical programs behave norm
 
 | | `"warn"` | `"silent"` | `"error"` |
 |---|---|---|---|
-| `enable()` | **Default.** Warns once on stderr, returns `False`; your program continues unsandboxed | Returns `False` quietly | Prints the reason and exits with the status code |
+| `enable()` | **Default.** Warns once on stderr, returns `False`; your program continues unsandboxed | Returns `False` quietly | Raises `SandboxUnavailable`; nothing of your program has run |
 | `run()` | Warns once, runs the command unsandboxed; `result.sandboxed` is `False` | Same, no warning | **Default.** Does not run; `result.returncode` is `None`, `result.status` says why |
 | `Popen()` | Warns once, returns an ordinary `subprocess.Popen` with `sandboxed = False` | Same, no warning | **Default.** Raises `SandboxUnavailable` |
 
@@ -351,7 +359,7 @@ Two things never fall back silently, whatever the setting:
 
 ## Status codes
 
-`pymxc.Status` is an `IntEnum`. The same numbers are the exit codes of `python pymxc.py` and of `enable()` when it refuses to run.
+`pymxc.Status` is an `IntEnum`. The same numbers are the exit codes of `python pymxc.py`, and the `status` of every error `enable()`, `run()` and `Popen()` report.
 
 | Code | Name | Meaning | What to do |
 |---|---|---|---|
@@ -557,7 +565,7 @@ Starting a sandboxed process costs a few tens of milliseconds more than an ordin
 On Windows 11 25H2 build 26200.9974 with Python 3.12, 3.13 and 3.14:
 
 - `python pymxc.py --selftest`: the encoder produces the reference bytes, and Windows enforces the policy (writes and reads outside denied, deny path wins, network blocked, temp folder works).
-- `python -m unittest discover -s tests -v`: 88 tests. They cover file access (read-write, read-only, deny, a deny path that appears later, a single granted file), network off, the host allow-list, loopback, exit codes and arguments, standard input, timeouts stopping the whole process tree, `Popen` streaming and `kill`, `enable()` for a script and for `python -m`, `enable()` keeping the program's own folder read-only, `NO_WINDOWS`, `CLIPBOARD = "none"`, the name-listing switch, temp folder cleanup, every `ON_UNAVAILABLE` mode, the status codes, and that a command cannot see other programs' windows by default.
+- `python -m unittest discover -s tests -v`: 89 tests. They cover file access (read-write, read-only, deny, a deny path that appears later, a single granted file), network off, the host allow-list, loopback, exit codes and arguments, standard input, timeouts stopping the whole process tree, `Popen` streaming and `kill`, `enable()` for a script and for `python -m`, `enable()` keeping the program's own folder read-only, `NO_WINDOWS`, `CLIPBOARD = "none"`, the name-listing switch, temp folder cleanup, every `ON_UNAVAILABLE` mode, the status codes, and that a command cannot see other programs' windows by default.
 - An audit on the same build tried about 130 ways out of the sandbox (junctions, other spellings of a path, the registry, other processes, window messages, each network mode against local and public addresses). What got through is listed under [Limits you should know](#limits-you-should-know); multicast traffic to the local network under `"internet"` got through too and is now blocked.
 - `enable()` in a real console window, with redirected output, and with captured output.
 - `python pymxc.py --selftest` also passed on a second computer running a different Windows build (26300.9974, policy version 1.1). Only the selftest was run there, not the full test suite.

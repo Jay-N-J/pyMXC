@@ -48,5 +48,4 @@ proc = pymxc.Popen([sys.executable, str(script), str(reference), str(output),
 for line in proc.stdout:                   # arrives as the job prints it
     print("  job |", line.rstrip())
 print("exit code:", proc.wait(), "| sandboxed:", proc.sandboxed)
-for warning in proc.warnings:
-    print("warning:", warning)
+print("warnings from pymxc:", len(proc.warnings))   # the texts are in proc.warnings; show them your own way

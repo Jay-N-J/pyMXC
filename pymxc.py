@@ -104,7 +104,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from types import SimpleNamespace
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 
 __all__ = [
     "enable", "run", "Popen", "status", "available", "is_sandboxed", "probe",
@@ -129,9 +129,8 @@ ON_UNAVAILABLE = None          # None = "warn" for enable() (your own program ca
 #                              #        not trust is never started without the sandbox)
 # ON_UNAVAILABLE = "warn"      # print one warning, then run WITHOUT the sandbox
 # ON_UNAVAILABLE = "silent"    # run without the sandbox and say nothing
-# ON_UNAVAILABLE = "error"     # do not run: enable() exits with the status code,
-#                              # run() returns a Result that did not run,
-#                              # Popen() raises SandboxUnavailable
+# ON_UNAVAILABLE = "error"     # do not run: enable() and Popen() raise SandboxUnavailable,
+#                              # run() returns a Result that did not run
 
 # ---- Files ------------------------------------------------------------------
 # The workspace is the one folder the program works in.
@@ -313,9 +312,9 @@ ENCODING = "utf-8"             # run(): how output is decoded. Python children a
 # ENCODING = "oem"             # the console code page (cmd.exe built-ins such as dir)
 
 HIDE_SECRET_ENV = False        # the program gets all of your environment variables
-# HIDE_SECRET_ENV = True       # drop variables that look like keys, tokens or passwords.
-#                              # It goes by name (and by a password inside a URL), so it
-#                              # can miss one. Variables saved for your user account
+# HIDE_SECRET_ENV = True       # drop variables that look like keys, tokens or other secrets.
+#                              # It goes by name (and spots sign-in details inside a URL),
+#                              # so it can miss one. Variables saved for your user account
 #                              # (setx, System Properties) stay readable in the registry.
 
 EXTRA_ENV = {}                 # environment variables to add or replace
@@ -1292,8 +1291,8 @@ _URL_WITH_PASSWORD = re.compile(r"://[^/@\s:]*:[^/@\s]+@")
 
 
 def _looks_secret(name: str, value: str = "") -> bool:
-    """True for a variable whose name reads like a key, token or password, or
-    whose value is a URL with a password in it (postgres://user:pass@host)."""
+    """True for a variable whose name suggests a key, token or other secret, or
+    whose value is a URL that carries sign-in details before the host name."""
     parts = [p for p in re.split(r"[^A-Za-z0-9]+", name.upper()) if p]
     if any(p in _SECRET_WORDS or p.endswith(("TOKEN", "SECRET", "PASSWORD", "APIKEY")) for p in parts):
         return True
@@ -2394,8 +2393,19 @@ def enable(**options) -> bool:
     for it, and exits with its exit code; it does not return. Inside (the
     restarted copy) it returns True and the program carries on, contained.
     When the sandbox is not available it returns False after a warning (the
-    program carries on WITHOUT the sandbox), or exits with the status code if
-    ON_UNAVAILABLE is "error".
+    program carries on WITHOUT the sandbox), or raises ``SandboxUnavailable``
+    if ON_UNAVAILABLE is "error".
+
+    It never prints an error itself. A bad setting raises ``PolicyError`` and
+    a launch Windows refuses raises ``SandboxLaunchError``; both are
+    ``SandboxError``, carry the matching ``status`` code, and say what to do.
+    Left uncaught, Python reports the error and the program ends before any
+    of it has run. Catch it to report it your own way::
+
+        try:
+            pymxc.enable(on_unavailable="error")
+        except pymxc.SandboxError as error:
+            sys.exit(int(error.status))
 
     The program may read its workspace (default: the folder of the script, or
     the current folder for ``python -m``) and nothing else of yours. It may
@@ -2433,10 +2443,6 @@ def enable(**options) -> bool:
             tempfile.tempdir = tmp
         return True
 
-    def stop(code: Status, message: str):
-        print(f"pymxc ERROR: {message}", file=sys.stderr)
-        raise SystemExit(int(code))
-
     current = status()
     restartable = getattr(sys, "frozen", False) or bool(sys.argv and sys.argv[0] not in ("", "-c"))
     args, module_launch = _restart_args() if restartable else ([], True)
@@ -2456,11 +2462,12 @@ def enable(**options) -> bool:
         try:
             proceed = _handle_unavailable(opts, current)
             if proceed:
-                _check_settings(opts, workspace)
+                _check_settings(opts, workspace)  # a bad setting is an error with or without the sandbox
         except PolicyError as exc:
-            stop(exc.status, str(exc))
+            # Raised from here, so the report points at the caller's enable() line.
+            raise exc.with_traceback(None) from None
         if not proceed:
-            stop(current.code, f"{current.message} Refusing to run without the sandbox.")
+            raise SandboxUnavailable(f"{current.message} Refusing to run without the sandbox.", current.code)
         return False
 
     code_folders = (home, Path(__file__).resolve().parent)
@@ -2495,9 +2502,10 @@ def enable(**options) -> bool:
                 console=share_console, inherit_stdio=bool(opts.console) and not share_console,
                 ui_limits=policy.ui_limits, wait_for_tree=bool(opts.wait_for_child_processes))
         except SandboxLaunchError as exc:
-            stop(Status.LAUNCH_FAILED, _explain(exc))
+            # The same error, with what it usually means and what to try.
+            raise SandboxLaunchError(_explain(exc), exc.code) from None
         except SandboxError as exc:
-            stop(exc.status, str(exc))
+            raise exc.with_traceback(None) from None
         for warning in policy.warnings:
             print(f"pymxc WARNING: {warning}", file=sys.stderr)
         if proc.stdout is not None:
